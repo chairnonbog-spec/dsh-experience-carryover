@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 36 36" role="img" aria-label="Project experience carry-over">
+  <defs>
+    <clipPath id="dshExperienceBook">
+      <path d="M9 8h13a3 3 0 0 1 3 3v17H12a3 3 0 0 1-3-3V8z"/>
+    </clipPath>
+  </defs>
+  <path d="M9 8h13a3 3 0 0 1 3 3v17H12a3 3 0 0 1-3-3V8z" fill="#3f5f8a"/>
+  <path d="M12 8h10a3 3 0 0 1 3 3v17H15a3 3 0 0 1-3-3V8z" fill="#5b82b8"/>
+  <g clip-path="url(#dshExperienceBook)" stroke="#eef3fa" stroke-width="1.6" stroke-linecap="round">
+    <path d="M13.5 14.5h7"/>
+    <path d="M13.5 18.5h5"/>
+  </g>
+  <path d="M24 21.5l3.4 7-2.7-1.2-1.6 2.7-1.6-.9 1.6-2.7-2.9-.6z" fill="#d8a24a"/>
+</svg>

@@ -1,0 +1,17 @@
+- insert:
+    - id: dsh-experience-carryover
+      name: 'dsh-experience-carryover'
+      config:
+        experienceFile: experience.md
+        projectRootMarkers:
+          - .git
+        maxInjectBytes: 32768
+        maxReadBytes: 262144
+        guidance: true
+        guidanceOrder: 640
+        layout:
+          tools: 运行工具
+          downloads: 下载文件
+          project: 项目文件
+          deliverables: 交付物
+          runtime: 运行文件

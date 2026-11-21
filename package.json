@@ -1,0 +1,46 @@
+{
+  "name": "dsh-experience-carryover",
+  "version": "1.1.0",
+  "description": "Cross-session experience carry-over for DSH: loads the project experience file once per conversation, records delivered lessons back, and keeps generated files in a fixed project layout.",
+  "type": "module",
+  "license": "MIT",
+  "author": "dsh-experience-carryover contributors",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "experience",
+    "memory",
+    "agent",
+    "context"
+  ],
+  "exports": {
+    ".": "./index.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/USERNAME/dsh-experience-carryover.git"
+  },
+  "bugs": {
+    "url": "https://github.com/USERNAME/dsh-experience-carryover/issues"
+  },
+  "homepage": "https://github.com/USERNAME/dsh-experience-carryover#readme",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

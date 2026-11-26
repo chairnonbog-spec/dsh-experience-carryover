@@ -10,13 +10,20 @@
 
 ## 它怎么工作
 
+经验分**两层**，各自独立存放：
+
+| 层 | 位置 | 放什么 |
+|---|---|---|
+| **全局** | `$DSH_HOME/experience.md`（通常是 `~/.dsh/experience.md`） | 跨项目通用的心得：DSH 本身用法、插件写法、环境坑 |
+| **项目** | `<项目根>/experience.md` | 本项目专有的经验 |
+
 | 时机 | 行为 |
 |---|---|
-| 对话开始的第一步 | 检查本会话是否已载入经验库；已载入直接跳过，未载入则读取 `<项目根>/experience.md` 注入一次上下文，并写入会话记录 |
-| 会话恢复 / 分叉 / 重放 | 注入消息已在会话记录中，恢复出来的会话同样判定为“已读”，不会二次注入 |
-| 项目交付后 | agent 调用 `save_experience` 追加条目（标题、摘要、可选细节/标签/类型），按标题与摘要去重 |
-| 需要全文或检索 | agent 调用 `read_experience`，可带 `query` 关键字过滤条目 |
-| 开始产生文件前 | agent 调用 `project_workspace` 在项目根下建好并确认四层整理结构 |
+| 对话开始的第一步 | 检查本会话是否已载入；已载入跳过，未载入则**两层都读**并注入一次，写入会话记录 |
+| 会话恢复 / 分叉 / 重放 | 注入消息已在会话记录中，判定为“已读”，不会二次注入 |
+| 项目交付后 | agent 调用 `save_experience` 追加条目，用 `scope` 选择写哪一层（默认 project） |
+| 需要全文或检索 | agent 调用 `read_experience`，`scope` 可为 `all`（默认）/ `project` / `global`，可带 `query` |
+| 开始产生文件前 | agent 调用 `project_workspace` 在项目根下建好整理结构 |
 
 插件的常驻提示（system prompt 章节）告诉 agent 这套结构、每个目录放什么、交付后记录经验。插件自身不发起模型请求。
 
@@ -52,8 +59,9 @@
 | 字段 | 默认 | 含义 |
 |---|---|---|
 | `experienceFile` | `experience.md` | 项目根下的经验文件名 |
+| `globalExperienceFile` | `experience.md` | `$DSH_HOME` 下的全局经验文件名；设为 `''` 可**关闭全局层** |
 | `projectRootMarkers` | `['.git']` | 标记项目根的目录/文件名 |
-| `maxInjectBytes` | `32768` | 单次注入的上下文上限（超出截断，提示改用 `read_experience`） |
+| `maxInjectBytes` | `32768` | 单次注入上限，**两层各分一半**；超出截断并提示改用 `read_experience` |
 | `maxReadBytes` | `262144` | `read_experience` 单次返回上限 |
 | `guidance` | `true` | 是否注册常驻提示章节 |
 | `guidanceOrder` | `640` | 该章节在 system prompt 中的顺序 |
@@ -75,9 +83,16 @@
 
 移除该 bundle 后，已注入的经验消息仍留在历史会话中，但新会话不再自动读取经验文件，`save_experience` / `read_experience` / `project_workspace` 三个工具也不再可用；`experience.md` 与已建好的目录保持原样。
 
+## 关于跨端继承
+
+**DSH 本身没有账号级云存储**，经验文件不会随账号自动同步到其他设备。官方账号设置明确写着"Completion does not synchronize across devices or create a per-account history"，storage 家族也只有一个本地 JSON 后端。
+
+目前能做的是：**在一台机器上跨项目复用**（全局层）。如果想跨设备，需要自己把经验文件放进你已有的同步渠道（Git 仓库、同步盘等），本插件不绑定任何云服务，也不保存凭据。
+
 ## 已知限制
 
-- 只读取一次：会话中途手工修改 `experience.md` 不会刷新上下文，需要时用 `read_experience`。
+- 只读取一次：会话中途手工修改经验文件不会刷新上下文，需要时用 `read_experience`。
 - 结构建在项目根：切换工作目录后按新目录判定项目根，两处结构互不影响。
 - `project_workspace` 只建目录不搬文件：已有文件需要 agent 按规则自行归位。
 - 经验写入是追加式的模板生成 Markdown，不做语义合并；重复条目按标题加摘要前缀判重。
+- 全局层路径依赖 `$DSH_HOME`；解析不到时全局层自动停用，只注入项目层。

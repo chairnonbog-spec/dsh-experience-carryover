@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Project experience carry-over",
-    "description": "Loads the project experience file once when a conversation starts, records delivered lessons back into it after each delivery, and keeps generated files sorted into a fixed layout at the project root: run tools, downloads, and project files split into deliverables and runtime files. Adds no requests of its own; it reads and writes experience.md at the project root and tells the agent the folder rules."
+    "description": "Loads two experience layers once when a conversation starts — a global file under the DSH home shared across projects, and a project file — then records delivered lessons back into either layer after each delivery. Also keeps generated files sorted into a fixed layout at the project root: run tools, downloads, and project files split into deliverables and runtime files. Adds no requests of its own."
   }
 }

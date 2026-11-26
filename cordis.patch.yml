@@ -3,6 +3,7 @@
       name: 'dsh-experience-carryover'
       config:
         experienceFile: experience.md
+        globalExperienceFile: experience.md
         projectRootMarkers:
           - .git
         maxInjectBytes: 32768

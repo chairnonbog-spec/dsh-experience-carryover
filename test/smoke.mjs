@@ -51,6 +51,10 @@ function createAgent(cwd) {
 }
 
 const root = await mkdtemp(join(tmpdir(), 'dsh-experience-'))
+// 全局经验层落在 DSH_HOME 下；测试必须指向临时目录，绝不能碰用户的真实全局库。
+const fakeHome = await mkdtemp(join(tmpdir(), 'dsh-home-'))
+const previousHome = process.env.DSH_HOME
+process.env.DSH_HOME = fakeHome
 try {
   await mkdir(join(root, '.git'), { recursive: true })
   await mkdir(join(root, 'nested'), { recursive: true })
@@ -72,8 +76,9 @@ try {
     async () => ({ kind: 'proceed', messages: [prompt] }),
   )
   check('首次 pre-step 注入经验上下文', first.messages.length === 2 && first.messages[1].source.kind === 'agent-experience', JSON.stringify(first.messages.map(m => m.source?.kind)))
-  check('注入内容包含经验文件路径', first.messages[1].content[0].text.includes(join(root, 'experience.md')))
-  check('注入内容标注尚未创建', first.messages[1].content[0].text.includes('尚未创建'))
+  check('注入内容包含项目经验文件路径', first.messages[1].content[0].text.includes(join(root, 'experience.md')))
+  check('注入内容包含全局经验文件路径', first.messages[1].content[0].text.includes(join(fakeHome, 'experience.md')))
+  check('注入内容标注两层尚未创建', first.messages[1].content[0].text.includes('尚未创建'))
 
   // 已注入的消息进入会话历史后，同一会话再开一步应跳过。
   agent.history.push(prompt, first.messages[1])
@@ -107,6 +112,41 @@ try {
   check('read_experience 返回全部', all.exists === true && all.entries === 1 && all.content.includes('验证方式'))
   const miss = await read.execute({ query: '不存在的关键词' }, exec)
   check('read_experience 过滤无匹配', miss.content.includes('没有匹配'))
+
+  // ---- 全局经验层 ----
+  const globalSaved = await save.execute({ title: '通用写法', summary: '工具 schema 的 required 只写在 object 上', scope: 'global' }, exec)
+  check('save_experience 可写全局层', globalSaved.scope === 'global' && globalSaved.saved === true, JSON.stringify(globalSaved))
+  check('全局层落到 DSH_HOME 下', globalSaved.path === join(fakeHome, 'experience.md'), globalSaved.path)
+  const globalText = await readFile(join(fakeHome, 'experience.md'), 'utf8')
+  check('全局文件含条目', globalText.includes('## 通用写法'))
+  check('项目文件未被污染', !(await readFile(join(root, 'experience.md'), 'utf8')).includes('通用写法'))
+
+  const projectOnly = await read.execute({ scope: 'project' }, exec)
+  check('read scope=project 只读项目层', projectOnly.content.includes('## 验证方式') && !projectOnly.content.includes('## 通用写法'))
+  const globalOnly = await read.execute({ scope: 'global' }, exec)
+  check('read scope=global 只读全局层', globalOnly.content.includes('## 通用写法') && !globalOnly.content.includes('## 验证方式'))
+  const both = await read.execute({ scope: 'all', query: '通用' }, exec)
+  check('read scope=all 覆盖两层', both.content.includes('通用写法'))
+
+  // 新会话注入时两层都要出现
+  const dualAgent = createAgent(taskDir)
+  const dual = await preStep(
+    { agent: dualAgent, messages: [prompt], turn: 1, step: 1, signal: new AbortController().signal },
+    async () => ({ kind: 'proceed', messages: [prompt] }),
+  )
+  const dualText = dual.messages[1].content[0].text
+  check('注入同时含全局与项目内容', dualText.includes('通用写法') && dualText.includes('验证方式'))
+
+  // 关闭全局层
+  const noGlobal = createContext(taskDir)
+  apply(noGlobal.ctx, { globalExperienceFile: '' })
+  const ngAgent = createAgent(taskDir)
+  const ng = await noGlobal.listeners.get('agent/pre-step')(
+    { agent: ngAgent, messages: [prompt], turn: 1, step: 1, signal: new AbortController().signal },
+    async () => ({ kind: 'proceed', messages: [prompt] }),
+  )
+  const ngText = ng.messages[1].content[0].text
+  check('globalExperienceFile 为空时停用全局层', ngText.includes('未启用') && !ngText.includes(join(fakeHome, 'experience.md')))
 
   // project_workspace：项目根下的固定整理结构
   const workspace = tools.get('project_workspace')
@@ -157,6 +197,9 @@ try {
   check('已 claim 的注入上下文不再重复注入', afterClaim.messages.length === 2, JSON.stringify(afterClaim.messages.map(m => m.source?.kind)))
 } finally {
   await rm(root, { recursive: true, force: true })
+  await rm(fakeHome, { recursive: true, force: true })
+  if (previousHome === undefined) delete process.env.DSH_HOME
+  else process.env.DSH_HOME = previousHome
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILED`)

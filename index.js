@@ -29,6 +29,8 @@ const KIND_VALUES = ['technique', 'pitfall', 'decision', 'reference']
 /** 默认配置；全部字段可在 cordis.patch.yml 的该行 config 中覆盖。 */
 const DEFAULT_CONFIG = {
   experienceFile: 'experience.md',
+  /** 全局经验库的文件名，位于 DSH_HOME 下；设为空字符串可关闭全局层。 */
+  globalExperienceFile: 'experience.md',
   projectRootMarkers: ['.git'],
   maxInjectBytes: 32768,
   maxReadBytes: 262144,
@@ -44,16 +46,25 @@ const DEFAULT_CONFIG = {
   },
 }
 
+/** 两个经验层的标识。 */
+const LAYER_GLOBAL = 'global'
+const LAYER_PROJECT = 'project'
+
 /** 经验文件骨架。 */
-const FILE_HEADER = [
-  '# 项目经验库（experience.md）',
-  '',
-  '> 由 dsh-experience 插件维护：新会话开始时自动载入一次，项目交付后追加条目。',
-  '> 每条写清场景、做法、坑点与验证方式，便于下次直接复用。',
-  '',
-  '---',
-  '',
-].join('\n')
+function fileHeader(scope) {
+  return [
+    `# ${scope === LAYER_GLOBAL ? '全局经验库' : '项目经验库'}（experience.md）`,
+    '',
+    '> 由 dsh-experience-carryover 插件维护：新会话开始时自动载入一次，项目交付后追加条目。',
+    scope === LAYER_GLOBAL
+      ? '> 这里放跨项目通用的心得（DSH 本身的用法、插件写法、环境坑），不写某个项目专有的内容。'
+      : '> 这里放本项目专有的经验；跨项目通用的请写入全局经验库。',
+    '> 每条写清场景、做法、坑点与验证方式，便于下次直接复用。',
+    '',
+    '---',
+    '',
+  ].join('\n')
+}
 
 /** 合并用户配置与默认值；未知字段忽略，非法值回退默认。 */
 function resolveConfig(raw) {
@@ -74,6 +85,10 @@ function resolveConfig(raw) {
   const layoutInput = input.layout !== null && typeof input.layout === 'object' ? input.layout : {}
   return {
     experienceFile: text(input.experienceFile, DEFAULT_CONFIG.experienceFile),
+    // 全局层允许用空字符串显式关闭。
+    globalExperienceFile: typeof input.globalExperienceFile === 'string'
+      ? input.globalExperienceFile.trim()
+      : DEFAULT_CONFIG.globalExperienceFile,
     projectRootMarkers: list(input.projectRootMarkers, DEFAULT_CONFIG.projectRootMarkers),
     maxInjectBytes: positive(input.maxInjectBytes, DEFAULT_CONFIG.maxInjectBytes),
     maxReadBytes: positive(input.maxReadBytes, DEFAULT_CONFIG.maxReadBytes),
@@ -129,14 +144,32 @@ async function findProjectRoot(startDirectory, markers) {
   return start
 }
 
-/** 本会话的经验库位置与项目根下的标准目录。 */
+/** 解析 DSH 主目录：$DSH_HOME，否则 ~/.dsh。用于全局经验层。 */
+function dshHome() {
+  const fromEnv = process.env.DSH_HOME
+  if (typeof fromEnv === 'string' && fromEnv.trim() !== '') return fromEnv.trim()
+  const home = process.env.USERPROFILE ?? process.env.HOME
+  if (typeof home === 'string' && home.trim() !== '') return join(home.trim(), '.dsh')
+  return undefined
+}
+
+/**
+ * 本会话的经验库位置与项目根下的标准目录。
+ * 经验分两层：全局库（DSH_HOME 下，跨项目复用）与项目库（项目根下，项目专有）。
+ */
 async function experienceTarget(ctx, agent, config, signal) {
   const cwd = await currentDirectory(ctx, agent, signal)
   const root = await findProjectRoot(cwd, config.projectRootMarkers)
   const layout = config.layout
+  const home = dshHome()
+  const globalFile = home !== undefined && config.globalExperienceFile !== ''
+    ? join(home, config.globalExperienceFile)
+    : undefined
   return {
     cwd,
     root,
+    home,
+    globalFile,
     file: join(root, config.experienceFile),
     layout,
     tools: join(root, layout.tools),
@@ -223,25 +256,50 @@ function alreadyLoaded(agent, batch) {
   return carriesContext(inbox.nextStep) || carriesContext(inbox.nextTurn)
 }
 
-/** 组装注入给模型的经验库上下文。 */
-function renderExperienceContext({ file, exists, text, truncated, bytes, root, layout, experienceFile }) {
+/** 渲染一层经验库：有内容时附上正文。 */
+function renderLayer(label, file, loaded, maxReadHint) {
+  const lines = []
+  if (file === undefined) {
+    lines.push(`${label}：未启用（配置里 globalExperienceFile 为空或找不到 DSH_HOME）。`)
+    return lines
+  }
+  lines.push(`${label}：${file}`)
+  if (!loaded.exists) {
+    lines.push('状态：尚未创建。')
+    return lines
+  }
+  if (loaded.text.trim() === '') {
+    lines.push('状态：文件存在但为空。')
+    return lines
+  }
+  const { text, truncated, bytes } = loaded
+  const suffix = truncated
+    ? `内容较长，只载入开头一部分；需要全文请调用 read_experience`
+    : '完整载入'
+  lines.push(`状态：已读取（${countEntries(text)} 条，${bytes} 字节；${suffix}）。`)
+  lines.push('```markdown')
+  lines.push(text.trimEnd())
+  lines.push('```')
+  return lines
+}
+
+/** 组装注入给模型的经验上下文（全局层 + 项目层 + 整理结构）。 */
+function renderExperienceContext({ target, global, project, layout }) {
   const lines = ['<system-reminder>']
-  lines.push(`本项目经验库：${file}`)
-  if (!exists) {
-    lines.push('状态：尚未创建（本次会话在该项目下第一次交付）。')
-    lines.push(`交付后请调用 save_experience 把可复用的经验写入 ${experienceFile}。`)
-  } else if (text.trim() === '') {
-    lines.push('状态：文件存在但为空；交付后请调用 save_experience 写入第一条经验。')
-  } else {
-    const suffix = truncated ? `内容较长，已载入开头 ${Math.floor(bytes / 1024)} KiB 中的一部分；需要全文请调用 read_experience` : '完整载入'
-    lines.push(`状态：已读取（${countEntries(text)} 条，${bytes} 字节；${suffix}）。`)
-    lines.push('经验库内容：')
-    lines.push('```markdown')
-    lines.push(text.trimEnd())
-    lines.push('```')
+  lines.push(`经验库分两层，都已检查。`)
+  lines.push('')
+  lines.push(...renderLayer('全局经验库（跨项目复用）', target.globalFile, global))
+  lines.push('')
+  lines.push(...renderLayer('本项目经验库', target.file, project))
+  lines.push('')
+  if (!global.exists && target.globalFile !== undefined) {
+    lines.push('全局经验库尚未创建：遇到与具体项目无关的通用心得时，用 save_experience 并指定 scope="global" 写入。')
+  }
+  if (!project.exists) {
+    lines.push('本项目经验库尚未创建：交付后用 save_experience 写入（默认 scope="project"）。')
   }
   lines.push('')
-  lines.push(`项目根 ${root} 的固定整理结构：`)
+  lines.push(`项目根 ${target.root} 的固定整理结构：`)
   lines.push(`- ${layout.tools}/：运行工具，脚本等直接放这里，不再往下分层。`)
   lines.push(`- ${layout.downloads}/：下载文件，从网上或外部取得、尚未整理的文件。`)
   lines.push(`- ${layout.project}/${layout.deliverables}/：交付物，最终要交给用户或别的系统的成果。`)
@@ -266,8 +324,8 @@ function guidanceText(config) {
     `  - <项目根>${separator}${layout.project}${separator}${layout.deliverables}${separator} —— 交付物（最终成果）。`,
     `  - <项目根>${separator}${layout.project}${separator}${layout.runtime}${separator} —— 运行文件（配置、数据、中间产物）。`,
     '- 开始会产生文件的任务前先调用 project_workspace 建好或确认这套目录；之后每个文件按上述归属存放。',
-    `- <项目根>${separator}${config.experienceFile} 是跨会话经验库：会话开始时已自动载入一次，不要重复读取；需要全文或检索时调用 read_experience。`,
-    '- 每次项目交付（功能完成、修复验证通过、文档定稿）后调用 save_experience 记录可复用的做法、坑点与验证方式；未验证的结果、一次性的调试过程不要写入。',
+    `- 经验分两层：全局库 <DSH_HOME>${separator}${config.globalExperienceFile || 'experience.md'} 存跨项目通用的心得；项目库 <项目根>${separator}${config.experienceFile} 存本项目专有的内容。两层在会话开始时都已自动载入一次，不要重复读取；需要全文或检索时调用 read_experience（可指定 scope 只读其中一层）。`,
+    '- 每次项目交付（功能完成、修复验证通过、文档定稿）后调用 save_experience 记录可复用的做法、坑点与验证方式；未验证的结果、一次性的调试过程不要写入。写通用心得（DSH 用法、插件写法、环境坑）用 scope="global"，项目专有用 scope="project"（默认）。',
   ].join('\n')
 }
 
@@ -301,23 +359,32 @@ export function apply(ctx, config) {
     if (session !== undefined && composedStep.get(session) === key) return decision
 
     const target = await experienceTarget(ctx, agent, resolved, signal)
-    const { exists, text } = await readExperience(target.file)
-    const bounded = headBytes(text, resolved.maxInjectBytes)
-    const context = renderExperienceContext({
-      file: target.file,
-      exists,
-      text: bounded.text,
-      truncated: bounded.truncated,
-      bytes: bounded.bytes,
-      root: target.root,
-      layout: target.layout,
-      experienceFile: resolved.experienceFile,
-    })
+    // 两层各自读取；预算按层分配，避免一层挤掉另一层。
+    const halfBudget = Math.max(4096, Math.floor(resolved.maxInjectBytes / 2))
+    const globalRaw = target.globalFile === undefined
+      ? { exists: false, text: '' }
+      : await readExperience(target.globalFile)
+    const projectRaw = await readExperience(target.file)
+    const globalBounded = headBytes(globalRaw.text, halfBudget)
+    const projectBounded = headBytes(projectRaw.text, halfBudget)
+    const global = { exists: globalRaw.exists, ...globalBounded }
+    const project = { exists: projectRaw.exists, ...projectBounded }
+    const context = renderExperienceContext({ target, global, project, layout: target.layout })
     const message = {
       id: randomUUID(),
       role: 'user',
       content: [{ type: 'text', text: context }],
-      source: { kind: SOURCE_KIND, path: target.file, bytes: bounded.bytes, entries: countEntries(text), exists },
+      source: {
+        kind: SOURCE_KIND,
+        path: target.file,
+        globalPath: target.globalFile,
+        bytes: projectBounded.bytes,
+        entries: countEntries(projectRaw.text),
+        exists: projectRaw.exists,
+        globalBytes: globalBounded.bytes,
+        globalEntries: countEntries(globalRaw.text),
+        globalExists: globalRaw.exists,
+      },
     }
     if (session !== undefined) composedStep.set(session, key)
 
@@ -345,33 +412,44 @@ export function apply(ctx, config) {
         kind: { type: 'string', enum: KIND_VALUES, description: 'technique (a way that worked) | pitfall (a trap) | decision (a choice and its reason) | reference (where to look).' },
         tags: { type: 'array', items: { type: 'string' }, description: 'Optional keywords for later search.' },
         project: { type: 'string', description: 'Project name; defaults to the working directory name.' },
+        scope: {
+          type: 'string',
+          enum: ['project', 'global'],
+          description: 'Which file to write: "project" (default, this project\'s experience.md) or "global" (cross-project lessons under the DSH home).',
+        },
       },
     },
     output: {
       schema: {
         type: 'object',
         additionalProperties: false,
-        required: ['path', 'saved', 'duplicate', 'entries', 'bytes'],
+        required: ['path', 'saved', 'duplicate', 'entries', 'bytes', 'scope'],
         properties: {
           path: { type: 'string' },
           saved: { type: 'boolean' },
           duplicate: { type: 'boolean' },
           entries: { type: 'integer' },
           bytes: { type: 'integer' },
+          scope: { type: 'string' },
         },
       },
       render: (_args, value) => [{
         type: 'text',
         text: value.saved
-          ? `已记录经验到 ${value.path}（共 ${value.entries} 条，${value.bytes} 字节）。`
+          ? `已记录${value.scope === 'global' ? '全局' : '项目'}经验到 ${value.path}（共 ${value.entries} 条，${value.bytes} 字节）。`
           : `相同经验已存在，未重复写入 ${value.path}（共 ${value.entries} 条）。`,
       }],
     },
     async execute(args, exec) {
       if (exec.agent === undefined) throw new Error('save_experience 需要 agent 会话')
       const target = await experienceTarget(ctx, exec.agent, resolved, exec.signal)
-      const { exists, text } = await readExperience(target.file)
-      const base = exists ? text : FILE_HEADER
+      const scope = args.scope === 'global' ? LAYER_GLOBAL : LAYER_PROJECT
+      const file = scope === LAYER_GLOBAL ? target.globalFile : target.file
+      if (file === undefined) {
+        throw new Error('全局经验库不可用：DSH_HOME 无法解析或 globalExperienceFile 被关闭')
+      }
+      const { exists, text } = await readExperience(file)
+      const base = exists ? text : fileHeader(scope)
       const summary = String(args.summary ?? '').trim()
       const title = String(args.title ?? '').trim()
       if (title === '' || summary === '') throw new Error('title 与 summary 不能为空')
@@ -392,27 +470,33 @@ export function apply(ctx, config) {
           at: new Date().toISOString(),
         })
         next = `${base.replace(/\s+$/, '')}\n\n${entry}`
-        await mkdir(dirname(target.file), { recursive: true })
-        await writeFile(target.file, next, 'utf8')
+        await mkdir(dirname(file), { recursive: true })
+        await writeFile(file, next, 'utf8')
       }
       return {
-        path: target.file,
+        path: file,
         saved: !duplicate,
         duplicate,
         entries: countEntries(next),
         bytes: Buffer.byteLength(next, 'utf8'),
+        scope,
       }
     },
   })
 
   ctx.tools.register({
     name: 'read_experience',
-    description: 'Read the project experience file when the loaded excerpt is not enough. Optional query filters entries by keyword; without it the whole file is returned.',
+    description: 'Read the experience files when the loaded excerpt is not enough. Reads both layers by default; optional query filters entries by keyword.',
     parameters: {
       type: 'object',
       additionalProperties: false,
       properties: {
         query: { type: 'string', description: 'Case-insensitive keyword; only matching entries are returned.' },
+        scope: {
+          type: 'string',
+          enum: ['all', 'project', 'global'],
+          description: 'Which layer to read: "all" (default, both), "project", or "global".',
+        },
       },
     },
     output: {
@@ -438,19 +522,42 @@ export function apply(ctx, config) {
     async execute(args, exec) {
       if (exec.agent === undefined) throw new Error('read_experience 需要 agent 会话')
       const target = await experienceTarget(ctx, exec.agent, resolved, exec.signal)
-      const { exists, text } = await readExperience(target.file)
-      if (!exists) return { path: target.file, exists: false, entries: 0, truncated: false, content: '' }
+      const scope = args.scope === 'global' || args.scope === 'project' ? args.scope : 'all'
+      const wanted = []
+      if (scope !== 'project' && target.globalFile !== undefined) wanted.push({ label: '全局经验库', file: target.globalFile })
+      if (scope !== 'global') wanted.push({ label: '项目经验库', file: target.file })
       const query = typeof args.query === 'string' ? args.query.trim().toLowerCase() : ''
-      let content = text
-      if (query !== '') {
-        const matched = listEntries(text).filter(entry => `${entry.title}\n${entry.body}`.toLowerCase().includes(query))
-        content = matched.length === 0 ? `（没有匹配「${args.query}」的条目）` : matched.map(entry => `## ${entry.title}\n\n${entry.body}`).join('\n\n')
+      const blocks = []
+      let totalEntries = 0
+      let anyExists = false
+      for (const layer of wanted) {
+        const { exists, text } = await readExperience(layer.file)
+        if (exists) {
+          anyExists = true
+          totalEntries += countEntries(text)
+        }
+        let body
+        if (!exists) {
+          body = '（文件不存在）'
+        } else if (query === '') {
+          body = text.trim() === '' ? '（文件为空）' : text.trimEnd()
+        } else {
+          const matched = listEntries(text).filter(entry => `${entry.title}\n${entry.body}`.toLowerCase().includes(query))
+          body = matched.length === 0
+            ? `（没有匹配「${args.query}」的条目）`
+            : matched.map(entry => `## ${entry.title}\n\n${entry.body}`).join('\n\n')
+        }
+        blocks.push(`### ${layer.label}：${layer.file}\n\n${body}`)
       }
-      const bounded = headBytes(content, resolved.maxReadBytes)
+      if (blocks.length === 0) {
+        return { path: target.file, exists: false, entries: 0, truncated: false, content: '（没有可读的经验层）' }
+      }
+      const joined = blocks.join('\n\n---\n\n')
+      const bounded = headBytes(joined, resolved.maxReadBytes)
       return {
-        path: target.file,
-        exists: true,
-        entries: countEntries(text),
+        path: wanted.length === 1 ? wanted[0].file : `${target.globalFile ?? '(无全局)'} + ${target.file}`,
+        exists: anyExists,
+        entries: totalEntries,
         truncated: bounded.truncated,
         content: bounded.text,
       }
